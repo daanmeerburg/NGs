@@ -107,6 +107,7 @@ program BS_SN
 
   !lensing covariance
   logical :: want_lensingCV
+  real(dl) :: lcv(2:4900)
 
   real(dl) :: l2CLPP, l2CLPT, l2CLPE, l2CLBB
   real(dl), allocatable :: CLISW(:,:,:)
@@ -125,7 +126,7 @@ program BS_SN
   logical :: use_recon
 
   !shape: local = 1, equilateral = 2, orthogonal  = 3, folded = 4
-  shape = 3
+  shape = 1
   !experiment, SO = 1, CMBS4 = 2, PICO = 3, Planck = 4
   exper = 1
 
@@ -142,7 +143,7 @@ program BS_SN
   lmin = 2
   !you can change the Fisher-lmax here. Note that you cant change lmax since
   !it would ruiin reading the a,b,g, and d files
-  Fishlmax = 5000 !==> Fisher lmax
+  Fishlmax = 2000 !==> Fisher lmax
 
   !version (change if you dont want to overwrite, all produced files will be labelled by this); up to 3 characters 
   vers = 'v1'
@@ -150,6 +151,7 @@ program BS_SN
   !do you want to include lensing covariance?
   !only works with temperature at the moment 
   want_lensingCV = .true. 
+
   
   !for l < 51, do you want to use reconstruction noise?
 
@@ -165,8 +167,8 @@ program BS_SN
   if(test_rintegral) lim_r_samp = .false.
   
   FileUnit  = 10
-  minfields  = 2 !2 for only E
-  nfields  = 2 !2 for T and E, 1 for T only
+  minfields  = 1 !2 for only E
+  nfields  = 1 !2 for T and E, 1 for T only
   if (nfields .eq. 1) minfields  = 1
 
   if (nfields .eq. 1) then
@@ -182,7 +184,17 @@ program BS_SN
      want_lensingCV = .false.
   endif
 
-
+  if(want_lensingCV) then
+     write(*,*) "computing lensing covariance"
+     call compute_lensing_cov(lcv,Fishlmax)
+     
+     if(Fishlmax .gt. lmax - 100) then
+        write(*,*) "Fishlmax too large for lensing covariance"
+        Fishlmax =  lmax - 100
+     endif
+     
+  endif
+  !stop
   !currently using 2018 noise covariance directly from Planck Repo. Noise proabbly a little conservative (e.g. fsky not accounted for correctly)
   !lmax  = 1996, while for actual Planck analysis lmaxT = 2000 and lmaxE = 1500
 
@@ -779,8 +791,8 @@ program BS_SN
                        !see e.g. https://arxiv.org/pdf/1302.5799.pdf Eq 2.6
                        !also Rio-phi for E
                        !p = field1
-                       !j  = field2
-                       !k = fierld3
+                       !j = field2
+                       !k = field3
                        BLens(k,j,p) = fc1(l1,l2,l3) *  &
                             (a3j2(l3,1,p)*ClISW(l2,j+3,1)*ClISW(l3,p,k) + &
                             a3j2(l3,3,p)*ClISW(l3,k+3,1)*ClISW(l2,p,j)) + &       
@@ -813,7 +825,12 @@ program BS_SN
                                 Det = BredTemp(k,j,p)*BredTemp(s,r,q)
                                 TempCov = invcov(l1,p,q)*invcov(l2,j,r)*invcov(l3,k,s)
                                 TempCovCV = invcovCV(l1,p,q)*invcovCV(l2,j,r)*invcovCV(l3,k,s)
-
+                                if (want_lensingCV) then !only works for temperature right now
+                                   TempCovCV = TempCovCV*(1.d0 + lcv(l1)+lcv(l2)+lcv(l3))**(-1.d0)
+                                   !write(*,*) l1,l2,l3, lcv(l1)+lcv(l2)+lcv(l3)
+                                endif
+                                
+                                
                                 TotSum = TotSum + Det*TempCov/tr(l1,l2,l3)
                                 TotSumCV = TotSumCV + Det*TempCovCV/tr(l1,l2,l3)
 
@@ -1386,5 +1403,96 @@ contains
     return 
 
   end subroutine GetThreeJs
+  
+  subroutine  compute_lensing_cov(lcv,lmax) 
+
+  character(70) :: Clfile, Clfile2
+  real(dl) :: CMB2COBEnorm = 7428350250000.d0
+  integer :: ell
+  integer,intent(in) :: lmax
+  integer :: L, l1,l2,l3
+  real(dl), allocatable :: Cl(:,:,:), Clu(:,:,:)
+  !wigner 3j
+  real(dl)  :: a3j(0:20000)
+  real(dl) :: TotSum
+  real(dl) :: l2ClTT, l2CLEE, l2CLBB, l2CLTE, l2CLPP, l2CLTTu, l2CLEEu, l2CLTEu
+  integer :: max_l, min_l
+  integer :: i
+  real(dl),intent(out) :: lcv(2:4900)
+
+  !lmax can be only 4900
+  !lmax = 4900
+
+  !import spectra:
+  !lensed spectra
+  Clfile = 'CAMB/Lmax5000_nu0_lensedCls.dat'
+  !unlensed spectra
+  Clfile2 = 'CAMB/Lmax5000_nu0_scalCls.dat'
+  allocate(CL(2:lmax,4,4))
+  allocate(CLu(2:lmax,2,2))
+  open(unit=28,file=Clfile, status="old")
+  open(unit=29,file=Clfile2, status="old")
+  do l1 = 1, lmax
+     if (l1 .eq. 1) then 
+        read(28,*)
+        read(29,*)
+     else
+        !11 = TT
+        !21 = TP
+        read(28,*) ell, l2ClTT, l2CLEE, l2CLBB, l2CLTE 
+        read(29,*) ell, l2ClTTu, l2CLEEu, l2CLTEu, l2CLPP
+        !convert l(l+1)C_l/2pi [muK^2] to dimensionless C_l
+        !see https://camb.info/readme.html
+
+        CL(l1,1,1) = 2.*pi*l2ClTT/real(ell,dl)/(real(ell,dl)+1.) ! /CMB2COBEnorm
+        CL(l1,2,2) = 2.*pi*l2ClEE/ell/(ell+1.) /CMB2COBEnorm
+        CLu(l1,1,1) = 2.*pi*l2ClTTu/real(ell,dl)/(real(ell,dl)+1.) ! /CMB2COBEnorm
+        CLu(l1,2,2) = 2.*pi*l2ClEEu/ell/(ell+1.) /CMB2COBEnorm
+        CL(l1,3,3) = 2.*pi*l2ClBB/ell/(ell+1.) /CMB2COBEnorm
+        !write(*,*) ell, CL(l1,1,1) 
+        CL(l1,2,1) = 2.*pi*l2ClTE/ell/(ell+1.) /CMB2COBEnorm
+        CL(l1,1,2) = 2.*pi*l2ClTE/ell/(ell+1.) /CMB2COBEnorm
+        CLu(l1,2,1) = 2.*pi*l2ClTEu/ell/(ell+1.) /CMB2COBEnorm
+        CLu(l1,1,2) = 2.*pi*l2ClTEu/ell/(ell+1.) /CMB2COBEnorm
+
+        !lensing-auto spectrum:
+        CL(l1,4,4) = l2CLPP/(real(ell,dl))**4/CMB2COBEnorm
+
+        !write(*,*) ell, ClISW(l1,1:2,1)
+     endif
+  enddo
+  close(28)
+  close(29)
+
+  !$OMP PARALLEL DO DEFAUlT(SHARED),SCHEDULE(dynamic) &
+  !$OMP PRIVATE(l1,l2,L, min_l,max_l,i,a3j) &
+  !$OMP REDUCTION(+:totsum)
+  do l1 = 2, lmax, 1 !we assume a fixed l1 legg (which is lmax, to be compared to the Gaussian noise)
+     totsum = 0.d0
+        do l2 = max(lmin,l1), lmax
+           min_l = max(abs(l1-l2),l2) !the L,l1,l2 triplet still forms a triangle 
+           call GetThreeJs(a3j(abs(l2-l1)),l1,l2,0,0)
+           
+           if (mod(l1+l2+min_l,2)/=0) then
+              min_l = min_l+1 !L should only lead to parity even sum with l1,l2
+           end if
+           max_l = min(lmax,l1+l2)
+           do L=min_l, max_l, 2
+              totsum = totsum + prefactor(l1,l2,L)**2*a3j(L)**2*CL(L,4,4)/4.d0*&
+                   (L*(L+1.d0)+l2*(l2+1.d0)-l1*(l1+1.d0))**2*CLu(l2,1,1) / (2.d0*l1+1.d0)
+              
+           enddo !L loop
+        enddo !l2 loop
+        !totsum  = totsum!/CL(l1,1,1)
+        !write(*,*) l1, 6.d0*totsum/CLu(l1,1,1)
+        lcv(l1) =  2.d0*totsum/CLu(l1,1,1)
+  enddo !lmax loop
+
+  !$OMP END PARAllEl DO
+
+  deallocate(Cl)
+  deallocate(CLu)
+
+end subroutine compute_lensing_cov 
 
 end program BS_SN

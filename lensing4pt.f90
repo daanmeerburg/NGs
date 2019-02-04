@@ -64,9 +64,9 @@ program lensing_cov
   !$OMP PARALLEL DO DEFAUlT(SHARED),SCHEDULE(dynamic) &
   !$OMP PRIVATE(l1,l2,L, min_l,max_l,i,a3j) &
   !$OMP REDUCTION(+:totsum)
-  do l1 = 2, lmax, 1 !we assume a fixed l1 legg (which is lmax, to be compared to the Gaussian noise)
+  do l1 = 2, lmax, 100 !we assume a fixed l1 legg (which is lmax, to be compared to the Gaussian noise)
      totsum = 0.d0
-        do l2 = 2, lmax
+        do l2 = max(2,l1), lmax
            min_l = max(abs(l1-l2),l2) !the L,l1,l2 triplet still forms a triangle 
            call GetThreeJs(a3j(abs(l2-l1)),l1,l2,0,0)
            
@@ -76,7 +76,7 @@ program lensing_cov
            max_l = min(lmax,l1+l2)
            do L=min_l, max_l, 2
               totsum = totsum + prefactor(l1,l2,L)**2*a3j(L)**2*CL(L,4,4)/4.d0*&
-                   (L*(L+1.d0)+l2*(l2+1.d0)-l1*(l1+1.d0))**2/(2.d0*l1+1)*CLu(l2,1,1)
+                   (L*(L+1.d0)+l2*(l2+1.d0)-l1*(l1+1.d0))**2*CLu(l2,1,1)
               
            enddo !L loop
         enddo !l2 loop
@@ -87,6 +87,7 @@ program lensing_cov
   !$OMP END PARAllEl DO
 
   deallocate(Cl)
+  deallocate(CLu)
 
 
 
