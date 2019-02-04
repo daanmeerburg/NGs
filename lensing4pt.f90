@@ -76,7 +76,7 @@ program lensing_cov
            max_l = min(lmax,l1+l2)
            do L=min_l, max_l, 2
               totsum = totsum + prefactor(l1,l2,L)**2*a3j(L)**2*CL(L,4,4)/4.d0*&
-                   (L*(L+1.d0)+l2*(l2+1.d0)-l1*(l1+1.d0))**2*CLu(l2,1,1)
+                   (L*(L+1.d0)+l2*(l2+1.d0)-l1*(l1+1.d0))**2*CLu(l2,1,1)/(2.d0*l1+1.d0)
               
            enddo !L loop
         enddo !l2 loop
