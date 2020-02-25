@@ -6,7 +6,10 @@
 !tested on CITA machine lobster/homard. Takes 14 seconds for lmax = 500, 6 minutes for lmax = 2000 and 190 minutes for lmax = 5000 for local
 !longer for equilateral and orthogonal. So be wise...
 
-program BS_SN 
+program BS_SN
+
+  !wignerJ lib
+  use fwigxjpf
   implicit none
 
   !params
@@ -37,7 +40,7 @@ program BS_SN
   real(dl), allocatable :: BredTemp(:,:,:), Blens(:,:,:)
   real(dl) :: Btemp
   real(dl) :: abint
-  integer :: local = 1, equil = 2, ortho = 3, folded = 4 !not yet implemented
+  integer :: local = 1, equil = 2, ortho = 3, folded = 4, flat = 5 !not yet implemented
   character(7) :: nshape
   integer :: shape
 
@@ -68,6 +71,10 @@ program BS_SN
   !version control
   character(3) :: vers, dat
 
+  !comparing bispectrum covariance code to fisher
+  logical :: comp_code = .false.
+  real(dl) :: alpha, beta
+
 
   !cov data
   real(dl) :: l2CLTT, l2CLTE, l2CLEE
@@ -88,8 +95,8 @@ program BS_SN
   real(dl) :: fskyCV = 1.
   character(40) :: DefT = 'SOV3_T_default1-4-2_noisecurves' 
   character(40) :: Defpol = 'SOV3_pol_default1-4-2_noisecurves'
-  character(40) :: DefTS4 = 'S4_2LAT_T_default_noisecurves' 
-  character(40) :: DefpolS4 = 'S4_2LAT_pol_default_noisecurves'
+  character(40) :: DefTS4 = 'S4_190604d_2LAT_T_default_noisecurves' !new curves, as of June 11, 2019
+  character(40) :: DefpolS4 = 'S4_190604d_2LAT_pol_default_noisecurves'
   character(20) :: deproj, SENS, skyfrac
 
   !Fisher sums
@@ -107,6 +114,7 @@ program BS_SN
 
   !lensing covariance
   logical :: want_lensingCV
+  logical :: use_lensed_spectra
 
   real(dl) :: l2CLPP, l2CLPT, l2CLPE, l2CLBB
   real(dl), allocatable :: CLISW(:,:,:)
@@ -123,9 +131,20 @@ program BS_SN
   !reconstruction noise params 
   character(120) :: TTreconstionNoiseFile
   logical :: use_recon
+  real*8 val3j
 
-  !shape: local = 1, equilateral = 2, orthogonal  = 3, folded = 4
-  shape = 3
+  !SW approximation for fnl_local
+  logical :: want_SW_template = .false.
+  real(dl) :: norm
+
+
+  !if you want to compare output of bispectrum covariance code
+  !you get some extra prints
+
+  comp_code =  .false. 
+  
+  !shape: local = 1, equilateral = 2, orthogonal  = 3, folded = 4, flat = 5
+  shape = 2
   !experiment, SO = 1, CMBS4 = 2, PICO = 3, Planck = 4
   exper = 1
 
@@ -145,12 +164,19 @@ program BS_SN
   Fishlmax = 5000 !==> Fisher lmax
 
   !version (change if you dont want to overwrite, all produced files will be labelled by this); up to 3 characters 
-  vers = 'v1'
+  vers = 'x1'
 
+
+  !do you want to run the actual local shape or the SW approximation?
+  !only works for local and when you run temperature only
+  want_SW_template = .false.
+  
   !do you want to include lensing covariance?
   !only works with temperature at the moment 
-  want_lensingCV = .true. 
-  
+  want_lensingCV = .false.
+  !iff you want to use the lensed spectra in covariance 
+  use_lensed_spectra = .false.
+
   !for l < 51, do you want to use reconstruction noise?
 
   use_recon = .false.
@@ -158,14 +184,15 @@ program BS_SN
 
   !test r-integral instead of fisher?
   test_rintegral = .false.
-  
+
   !once tested, you can then limit integration range
   !putting new integration range below:
   lim_r_samp = .true.
-  if(test_rintegral) lim_r_samp = .false.
   
+  if(test_rintegral) lim_r_samp = .false.
+
   FileUnit  = 10
-  minfields  = 2 !2 for only E
+  minfields  = 1 !2 for only E
   nfields  = 2 !2 for T and E, 1 for T only
   if (nfields .eq. 1) minfields  = 1
 
@@ -189,21 +216,22 @@ program BS_SN
   !if want to use 'blue book' Planck noise instead. Change code accordingly below. 
   Noise(1) = 1.07695E-017 !Dimensionless, for Planck T
   Noise(2) = 1.61543E-017 !Dimensionless, for Planck E
-  sigma2(1) = 9.765981E-007 !Planck beam
-
+  !sigma2(1) = 9.765981E-007 !Planck beam
+  Noise(2) = 1.07695E-017 !ACT
+  sigma2(1) = 9.765981E-007/(3.333**2) !ACT beam
   if (exper .eq. 1) then
      cexp = 'SO'
      fsky  = 0.4 !should be consistent with noise choice above 
   elseif(exper .eq. 2) then
      cexp = 'S4'
-     fsky  = 0.4
+     fsky  = 0.43
   elseif(exper .eq. 3) then
      cexp  = 'PICO'
      fsky  = 0.8
   elseif (exper .eq. 4) then
      cexp = 'planck'
-     fsky = 0.75
-     if(lmax .ge. 1995) Fishlmax = 1995 !cant be larger then this when using noise files/ can be larger if you use Blue Book
+     fsky = 0.4
+     if(lmax .ge. 1995) Fishlmax = 3000 !cant be larger then this when using noise files/ can be larger if you use Blue Book
   else
      write(*,*) 'choose experiment 1 = SO, 2 = S4, 3 = PICO'
   endif
@@ -226,6 +254,14 @@ program BS_SN
      rmax = 14172.6
   elseif (shape .eq. 4) then
      nshape  = 'folded'
+     !most conservative, but needs to be checked
+     rmin = 13675.6
+     rmax = 14172.6
+  elseif (shape .eq. 5) then
+     nshape  = 'flat'
+     !most conservative, but needs to be checked
+     rmin = 13675.6
+     rmax = 14172.6
   endif
 
   !if(lmax .ge. 1000) form = '(I4)'
@@ -240,10 +276,17 @@ program BS_SN
   gammadeltafile = 'alphabeta/l_r_gamma_delta_new_Lmax'//trim(clmax)//'.txt' 
 
   !neutrino mass = 0
-  Covfile ='CAMB/Lmax'//trim(clmax)//'_nu0_scalCls.dat'
+  if(use_lensed_spectra) then     
+     !Covfile ='CAMB/Lmax5500_lensedCls.dat'
+     !Covfile ='CAMB/cosmo2017_10K_acc3_lensedCls.dat'
+     Covfile = '/mnt/raid-cita/meerburg/Bispectrum_Covariance/SOspectra/SOspectra_lensedCls.dat'
+  else
+     Covfile ='CAMB/Lmax'//trim(clmax)//'_nu0_scalCls.dat'
+  endif
 
   !ISW-lensing:
-  ISWfile = 'CAMB/Lmax'//trim(clmax)//'_nu0_lenspotentialCls.dat'
+  !ISWfile = 'CAMB/Lmax'//trim(clmax)//'_nu0_lenspotentialCls.dat'
+  ISWfile = '/mnt/raid-cita/meerburg/Bispectrum_Covariance/SOspectra/SOspectra_lenspotentialCls.dat'
   !Covfile ='CAMB/Lmax5000_nu0_Lmax5000_nu0_lensedCls.dat'
   open(unit=FileUnit,file = alphabetafile, status='old')
   open(unit=FileUnit+1,file = gammadeltafile, status='old')
@@ -369,9 +412,10 @@ program BS_SN
 
   !high ell noise
   if(exper .eq. SO) then 
-     NoiseFileT = 'noise/'//trim(defT)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_TT_yy.txt'
-     NoiseFileEB = 'noise/'//trim(defpol)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_EE_BB.txt'
-
+     !NoiseFileT = 'noise/'//trim(defT)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_TT_yy.txt'
+     !NoiseFileEB = 'noise/'//trim(defpol)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_EE_BB.txt'
+     NoiseFileT = 'noise/'//trim(defT)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_TT_yy_39GHzfix_ext15yrs.txt'
+     NoiseFileEB = 'noise/'//trim(defpol)//'_'//trim(deproj)//'_'//trim(SENS)//'_mask_'//trim(skyfrac)//'_ell_EE_BB_ext15yrs.txt'
 
      !use for ell < 40 in T en ell < 10 in E. For consistency only
      NoiseFileCMBS4 = 'noise/CMBS4noise.txt'
@@ -514,24 +558,26 @@ program BS_SN
 
      open(unit=FileUnit + 7,file = NoiseFilePlanck, status='old')
      write(*,*) 'getting noise Planck ...'
-     do l1 = 2, min(lmax,1996)
-        read(FileUnit + 7,*) ell, NL(l1,1,1), NL(l1,2,2)
-        NL(l1,1,1) = NL(l1,1,1)/CMB2COBEnorm
-        NL(l1,2,2) = NL(l1,2,2)/CMB2COBEnorm
+     do l1 = 2, lmax !min(lmax,1996) !change if you want to use the file instead of the Blue Book values
+        !read(FileUnit + 7,*) ell, NL(l1,1,1), NL(l1,2,2)
+        !NL(l1,1,1) = NL(l1,1,1)/CMB2COBEnorm
+        NL(l1,1,1) = Noise(1)*exp((l1+1)*(l1)*sigma2(1))
+        !NL(l1,2,2) = NL(l1,2,2)/CMB2COBEnorm
+        NL(l1,2,2) = Noise(2)*exp((l1+1)*(l1)*sigma2(1))
+
         NL(l1,2,1) = 0.d0
         NL(l1,1,2) = 0.d0 
         !write(*,*) ell, NL(l1,1,1), NL(l1,2,2)
         !adding noise to Cl's (allready includes Cosmic Variance)
-        CLtil(l1,1,1) = NL(l1,1,1)
+        CLtil(l1,1,1) = NL(l1,1,1) + CL(l1,1,1)
         CLtil(l1,2,1) = CL(l1,2,1) + NL(l1,2,1)
-        CLtil(l1,2,2) = NL(l1,2,2)
+        CLtil(l1,2,2) = NL(l1,2,2) + CL(l1,2,2)
         CLtil(l1,1,2) = CL(l1,1,2) + NL(l1,1,2)
      enddo
      !if(lmax .ge. 1996) CLtil(1996:lmax,1:2,1:2) = 10E10 !large number
 
      close(FileUnit + 7)
   endif
-
   !replace low ell with reconstruction noise:
 
   if (use_recon) then
@@ -597,12 +643,13 @@ program BS_SN
         !21 = TP
         read(28,*) ell, l2ClTT, l2CLEE, l2CLBB, l2CLTE, l2CLPP, l2CLPT, l2CLPE
         !convert l(l+1)C_l/2pi [muK^2] to dimensionless C_l
-        CLISW(l1,1,1) = 2.*pi*l2ClTT/real(ell,dl)/(real(ell,dl)+1.) /CMB2COBEnorm
-        CLISW(l1,2,2) = 2.*pi*l2ClEE/ell/(ell+1.) /CMB2COBEnorm
         CLISW(l1,3,3) = 2.*pi*l2ClBB/ell/(ell+1.) /CMB2COBEnorm
 
-        CLISW(l1,2,1) = 2.*pi*l2ClTE/ell/(ell+1.) /CMB2COBEnorm
-        CLISW(l1,1,2) = 2.*pi*l2ClTE/ell/(ell+1.) /CMB2COBEnorm
+        CLISW(l1,1,1) = CL(l1,1,1)
+        CLISW(l1,2,2) = CL(l1,2,2)
+
+        CLISW(l1,1,2) = CL(l1,1,2)
+        CLISW(l1,2,1) = CL(l1,2,1)
 
         !see https://camb.info/readme.html
         CLISW(l1,4,1) = 2.*pi*l2ClPT/(real(ell,dl)*(real(ell,dl)+1.))**(3.d0/2.d0) /CMB2COBEnorm**(1./2)
@@ -668,9 +715,9 @@ program BS_SN
 
   !lensing 4pt function, relevant for covariance:
   !using Eq. 76 in https://arxiv.org/pdf/astro-ph/0105117.pdf
-  
-  
-  
+
+
+
   !now set Fisher lmax:
   if (Fishlmax .ne. lmax) then 
      lmax = Fishlmax
@@ -683,7 +730,9 @@ program BS_SN
 
   !reduced bispectrum 
   BredTemp = 0.d0
+  lmin  = 2
 
+  write(*,*) 'FISHER lmin:', lmin
   !below we use:
   !* symmetry: l1=<l2=<l3
   !* even parity: l1 + l2 + l3 = even
@@ -705,10 +754,12 @@ program BS_SN
      FishC_CV = 0.d0
 
      !parallel loop l1:
-
+     !lmin = 4
+     !call fwig_table_init(2*500,9)
+     !call fwig_temp_init(2*500)
      !$OMP PARALLEL DO DEFAUlT(SHARED),SCHEDULE(dynamic) &
      !$OMP PRIVATE(l1,l2,l3, min_l,max_l,BredTemp, Blens), &
-     !$OMP PRIVATE(p,j,k,q,r,s,i,Det,TempCov,TempCovCV,abint,Btemp,a3j,a3j2) &
+     !$OMP PRIVATE(p,j,k,q,r,s,i,Det,TempCov,TempCovCV,abint,Btemp,a3j,a3j2,val3j) &
      !$OMP PRIVATE(BLensISW,DetISWLens,DetLensCross) &
      !$OMP REDUCTION(+:TotSum,TotSumCV,FishC,FishC_CV,TotSumISWLens,TotSumCVISWLens,TotSumLensCross,TotSumCVLensCross) 
 
@@ -761,6 +812,15 @@ program BS_SN
                                   +9.*(dr(i,l1,p)*br(i,l2,j) + dr(i,l2,j)*br(i,l1,p))*gr(i,l3,k) + &
                                   +9.*(gr(i,l1,p)*br(i,l2,j) + gr(i,l2,j)*br(i,l1,p))*dr(i,l3,k) 
                           elseif (shape .eq. folded) then
+                             abint = 3.*( br(i,l1,p)*br(i,l2,j)*ar(i,l3,k) + &
+                                  br(i,l3,k)*br(i,l1,p)*ar(i,l2,j) + &
+                                  br(i,l2,j)*br(i,l3,k)*ar(i,l1,p)) + &
+                                  9.*(dr(i,l1,p)*dr(i,l2,j)*dr(i,l3,k))  &
+                                  -3.*(gr(i,l1,p)*dr(i,l2,j) + gr(i,l2,j)*dr(i,l1,p))*br(i,l3,k) + &
+                                  -3.*(dr(i,l1,p)*br(i,l2,j) + dr(i,l2,j)*br(i,l1,p))*gr(i,l3,k) + &
+                                  -3.*(gr(i,l1,p)*br(i,l2,j) + gr(i,l2,j)*br(i,l1,p))*dr(i,l3,k) 
+                          elseif (shape .eq. flat) then
+                             abint = dr(i,l1,p)*dr(i,l2,j)*dr(i,l3,k) !1/(k1*k2*k3)**2
                           endif
 
                           !1D heat map of integral to determine r values to include
@@ -770,8 +830,16 @@ program BS_SN
 
                        enddo !r loop
 
+                       !val3j = fwig3jj(2* l1 , 2* l2 , 2* l3 , &
+                       !     2*(0), 2*(0) , 2*(0))
+
                        !means you have to recompute bispectrum elements every time, but requires low memory 
                        BredTemp(k,j,p)  = prefactor(l1,l2,l3)*a3j(l3)*Btemp
+                       !write(*,*)  BredTemp(k,j,p)
+                       
+
+                       
+                       !BredTemp(k,j,p)  = prefactor(l1,l2,l3)*val3j*Btemp
                        !if you write in this loop, it severaly slows down the inner loop.
                        !write(*,*) BredTemp(k,j,p)
 
@@ -794,7 +862,10 @@ program BS_SN
 
 
                        BLens(k,j,p)  = a3j(l3)*BLens(k,j,p)*prefactor(l1,l2,l3)
-
+                       !if you want semi analytical only for local Temp and cross correlation with true shape:
+                       if(want_SW_template .and. (nfields .eq. 1) .and. (shape .eq. 1)) then
+                          BLens(k,j,p) = -prefactor(l1,l2,l3)*a3j(l3)*floc(l1,l2,l3)                     
+                       endif
 
 
                     enddo !T, E loop
@@ -844,9 +915,11 @@ program BS_SN
 !!$
            enddo !l3 loop
         enddo !l2 loop
+
      enddo !L1 loop
      !$OMP END PARAllEl DO
-
+     !call fwig_temp_free();
+     !call fwig_table_free();
      write(*,*)
      write(*,*) 'fisher error weighted by spectrum:'
      write(*,'(A4,X,A11,X,A11)') '<x>', 'experiment', 'cosmic var'
@@ -864,20 +937,40 @@ program BS_SN
      if (nfields .gt. 1 .and. minfields .eq. 2) then
         write(*,'(A4,X,F11.3,X,F11.3)') 'EEE', sqrt(1./FishC(2,2,2,2,2,2)/fsky), sqrt(1./FishC_CV(2,2,2,2,2,2))
      endif
-
-
-
-
-     !marginalization over lensing contributions
-     DetFish = TotSumISWLens*TotSum -TotSumLensCross**2
-     DetFishCV = TotSumCVISWLens*TotSumCV -TotSumCVLensCross**2
-
-     DefnlMar = TotSumISWLens/DetFish
-     DefnlMarCV = TotSumCVISWLens/DetFishCV
-     write(*,'(A12,X,I4,X,A19,X,F11.3,X,A9,X,F11.3,X,A1)') 'For lmax = ', lmax, 'ISW-lensing bias = ', &
-          TotSumLensCross/TotSum, '(CV-limit', TotSumCVLensCross/TotSumCV, ')'
-     write(*,'(A25,X,F11.3,X,A9,X,F11.3,X,A1)') 'correlation coefficient:', TotSumLensCross/TotSum**(1./2)/TotSumISWLens**(1./2), &
+ 
+     
+     
+     if (want_SW_template) then
+        write(*,'(A12,X,I4,X,A31,X,F11.3,X,A9,X,F11.3,X,A1)') 'For lmax = ', lmax, 'the error on fnl (SW approx) = ', sqrt(1./TotSumISWLens/fsky), '(CV-limit', sqrt(1./TotSumCVISWLens/fskyCV), ')'
+        write(*,'(A25,X,F11.3,X,A9,X,F11.3,X,A1)') 'correlation coefficient:', TotSumLensCross/TotSum**(1./2)/TotSumISWLens**(1./2), &
           '(CV-limit', TotSumCVLensCross/TotSumCV**(1./2)/TotSumCVISWLens**(1./2), ')'
+     else
+        
+        !marginalization over lensing contributions
+        DetFish = TotSumISWLens*TotSum -TotSumLensCross**2
+        DetFishCV = TotSumCVISWLens*TotSumCV -TotSumCVLensCross**2
+
+        DefnlMar = TotSumISWLens/DetFish
+        DefnlMarCV = TotSumCVISWLens/DetFishCV
+
+        if(comp_code) then 
+        alpha = TotSumCVISWLens/DetFishCV !C/det
+        beta = -TotSumCVLensCross/DetFishCV !A/det 
+
+        write(*,*) 'lensing-ISW-fnl_local correlation coefficient:', TotSumCVLensCross/TotSumCV**(1./2)/TotSumCVISWLens**(1./2)
+        write(*,*) 'Fisher local error:', 1/TotSumCV**(1./2)
+        write(*,*) 'Fisher ISW-lensing error:', 1/TotSumCVISWLens**(1./2)
+        write(*,*) 'alpha', alpha, 'beta', beta
+        endif  
+        
+        write(*,'(A12,X,I4,X,A19,X,F11.3,X,A9,X,F11.3,X,A1)') 'For lmax = ', lmax, 'ISW-lensing bias = ', &
+             TotSumLensCross/TotSum, '(CV-limit', TotSumCVLensCross/TotSumCV, ')'
+        write(*,'(A12,X,I4,X,A31,X,F11.3,X,A9,X,F11.3,X,A1)') 'For lmax = ', lmax, 'the error on fnl-ISW-lensing = ', &
+             sqrt(1./TotSumISWLens/fsky), '(CV-limit', sqrt(1./TotSumCVISWLens/fskyCV), ')'
+        write(*,'(A25,X,F11.3,X,A9,X,F11.3,X,A1)') 'correlation coefficient:', TotSumLensCross/TotSum**(1./2)/TotSumISWLens**(1./2), &
+          '(CV-limit', TotSumCVLensCross/TotSumCV**(1./2)/TotSumCVISWLens**(1./2), ')'
+     endif
+     
      write(*,'(A12,X,I4,X,A19,X,F11.3,X,A9,X,F11.3,X,A1)') 'For lmax = ', lmax, 'the error on fnl = ', sqrt(1./TotSum/fsky), '(CV-limit', sqrt(1./TotSumCV/fskyCV), ')'
      write(*,'(A28,X,F11.3,X,A9,X,F11.3,X,A1)') 'Lensing Marginalized Error:', sqrt(DefnlMar/fsky), '(CV-limit', sqrt(DefnlMarCV), ')'
 
@@ -965,6 +1058,15 @@ program BS_SN
                                   +9.*(dr(i,l1,p)*br(i,l2,j) + dr(i,l2,j)*br(i,l1,p))*gr(i,l3,k) + &
                                   +9.*(gr(i,l1,p)*br(i,l2,j) + gr(i,l2,j)*br(i,l1,p))*dr(i,l3,k) 
                           elseif (shape .eq. folded) then
+                             abint = 3.*( br(i,l1,p)*br(i,l2,j)*ar(i,l3,k) + &
+                                  br(i,l3,k)*br(i,l1,p)*ar(i,l2,j) + &
+                                  br(i,l2,j)*br(i,l3,k)*ar(i,l1,p)) + &
+                                  9.*(dr(i,l1,p)*dr(i,l2,j)*dr(i,l3,k))  &
+                                  -3.*(gr(i,l1,p)*dr(i,l2,j) + gr(i,l2,j)*dr(i,l1,p))*br(i,l3,k) + &
+                                  -3.*(dr(i,l1,p)*br(i,l2,j) + dr(i,l2,j)*br(i,l1,p))*gr(i,l3,k) + &
+                                  -3.*(gr(i,l1,p)*br(i,l2,j) + gr(i,l2,j)*br(i,l1,p))*dr(i,l3,k) 
+                          elseif (shape .eq. flat) then
+                             abint = dr(i,l1,p)*dr(i,l2,j)*dr(i,l3,k) !1/(k1*k2*k3)**2
                           endif
 
 
@@ -1042,6 +1144,19 @@ program BS_SN
   !subroutines and functions needed:
 contains
 
+
+  real(dl) function floc(l1,l2,l3)
+    !SW approximation 
+    integer :: l1, l2, l3
+    real(dl) :: amp
+    real(dl) :: As = 2.1056d-9
+    !from https://arxiv.org/pdf/0812.3413.pdf Eq. 19 and 20
+    amp = (2.d0/27./pi**2)*As
+    floc = 1.d0/(l1+1.d0)/l1/l2/(l2+1.d0) + 1.d0/(l3+1.d0)/l3/l2/(l2+1.d0) + &
+         1.d0/(l1+1.d0)/l1/l3/(l3+1.d0)
+    floc = floc*amp*2.E-7 !2.E-7  is introduced to get roughly same amplitude at l_max = 500 to full fnl_local
+  end function floc
+  
   real function tr(l1,l2,l3)
     integer, intent(in) :: l1,l2,l3
     if ((l1.eq.l2).and.(l2.eq.l3)) then
